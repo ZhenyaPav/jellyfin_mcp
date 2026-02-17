@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "jellyfin": {
+      "command": "node",
+      "args": [
+        "/ABSOLUTE/PATH/TO/jellyfin_mcp/src/index.js"
+      ],
+      "env": {
+        "JELLYFIN_API_URL": "http://YOUR_JELLYFIN_HOST:8096",
+        "JELLYFIN_API_KEY": "YOUR_API_KEY",
+        "JELLYFIN_SESSION_STRATEGY": "active"
+      }
+    }
+  }
+}
