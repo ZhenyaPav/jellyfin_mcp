@@ -55,3 +55,33 @@ test("mcp server handles initialize and tools/list", async () => {
   assert.equal(messages[1].id, 2);
   assert.equal(messages[1].result.tools[0].name, "hello");
 });
+
+test("mcp server handles newline-delimited json requests", async () => {
+  const server = createMcpServer({
+    serverInfo: { name: "test", version: "0.0.0" },
+    tools: {
+      definitions: [{ name: "hello", inputSchema: { type: "object" } }],
+      async run() {
+        return { ok: true };
+      }
+    }
+  });
+
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const transport = new McpStdioTransport(server);
+  transport.start(input, output);
+
+  const chunks = [];
+  output.on("data", (c) => chunks.push(c));
+
+  input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
+  input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })}\n`);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const messages = parseFramedMessages(Buffer.concat(chunks));
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].id, 1);
+  assert.equal(messages[1].id, 2);
+  assert.equal(messages[1].result.tools[0].name, "hello");
+});

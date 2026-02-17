@@ -106,7 +106,7 @@ function jsonRpcError(id, code, message) {
 class McpStdioTransport {
   constructor(server) {
     this.server = server;
-    this.buffer = Buffer.alloc(0);
+    this.buffer = "";
     this.contentLength = null;
   }
 
@@ -118,52 +118,86 @@ class McpStdioTransport {
   }
 
   onData(chunk, output) {
-    this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)]);
+    this.buffer += Buffer.from(chunk).toString("utf8");
     while (true) {
-      if (this.contentLength === null) {
-        const headerEnd = this.buffer.indexOf("\r\n\r\n");
-        if (headerEnd === -1) {
+      if (this.contentLength !== null) {
+        if (this.buffer.length < this.contentLength) {
           return;
         }
-        const headerText = this.buffer.slice(0, headerEnd).toString("utf8");
-        const headers = parseHeaders(headerText);
-        const lengthHeader = headers["content-length"];
-        if (!lengthHeader) {
-          this.buffer = this.buffer.slice(headerEnd + 4);
-          continue;
-        }
-        this.contentLength = Number.parseInt(lengthHeader, 10);
-        this.buffer = this.buffer.slice(headerEnd + 4);
-      }
-
-      if (this.buffer.length < this.contentLength) {
-        return;
-      }
-
-      const bodyBuf = this.buffer.slice(0, this.contentLength);
-      this.buffer = this.buffer.slice(this.contentLength);
-      this.contentLength = null;
-
-      let msg;
-      try {
-        msg = JSON.parse(bodyBuf.toString("utf8"));
-      } catch (err) {
-        process.stderr.write(`invalid json: ${err.message}\n`);
+        const bodyText = this.buffer.slice(0, this.contentLength);
+        this.buffer = this.buffer.slice(this.contentLength);
+        this.contentLength = null;
+        this.handleJsonText(bodyText, output);
         continue;
       }
 
-      Promise.resolve(this.server.onRequest(msg))
-        .then((response) => {
-          if (!response) {
-            return;
-          }
-          writeMessage(output, response);
-        })
-        .catch((err) => {
-          process.stderr.write(`request handler error: ${err.message}\n`);
-        });
+      if (looksLikeHeaders(this.buffer)) {
+        const headerBoundary = this.buffer.indexOf("\r\n\r\n");
+        if (headerBoundary === -1) {
+          return;
+        }
+        const headerText = this.buffer.slice(0, headerBoundary);
+        const headers = parseHeaders(headerText);
+        const lengthHeader = headers["content-length"];
+        this.buffer = this.buffer.slice(headerBoundary + 4);
+        if (!lengthHeader) {
+          continue;
+        }
+        this.contentLength = Number.parseInt(lengthHeader, 10);
+        if (!Number.isFinite(this.contentLength) || this.contentLength < 0) {
+          this.contentLength = null;
+        }
+        continue;
+      }
+
+      const lineEnd = this.buffer.indexOf("\n");
+      if (lineEnd === -1) {
+        return;
+      }
+      const line = this.buffer.slice(0, lineEnd).replace(/\r$/, "");
+      this.buffer = this.buffer.slice(lineEnd + 1);
+      if (line.trim() === "") {
+        continue;
+      }
+      this.handleJsonText(line, output);
     }
   }
+
+  handleJsonText(text, output) {
+    let msg;
+    try {
+      msg = JSON.parse(text);
+    } catch (err) {
+      process.stderr.write(`invalid json: ${err.message}\n`);
+      return;
+    }
+
+    Promise.resolve(this.server.onRequest(msg))
+      .then((response) => {
+        if (!response) {
+          return;
+        }
+        writeMessage(output, response);
+      })
+      .catch((err) => {
+        process.stderr.write(`request handler error: ${err.message}\n`);
+      });
+  }
+}
+
+function looksLikeHeaders(text) {
+  if (!text || text.length === 0) {
+    return false;
+  }
+  if (text.startsWith("{") || text.startsWith("[")) {
+    return false;
+  }
+  const firstLineEnd = text.indexOf("\n");
+  if (firstLineEnd === -1) {
+    return text.toLowerCase().startsWith("content-length:");
+  }
+  const firstLine = text.slice(0, firstLineEnd).replace(/\r$/, "").toLowerCase();
+  return firstLine.startsWith("content-length:");
 }
 
 function parseHeaders(headerText) {
