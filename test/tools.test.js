@@ -4,27 +4,22 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createToolRunner } = require("../src/tools");
 
-test("list media resolves user and maps items", async () => {
-  const calls = [];
+test("browse clamps limit and returns compact items without ids", async () => {
   const client = {
-    async resolveUserId(userId) {
-      calls.push(["resolveUserId", userId]);
+    async resolveUserId() {
       return "u1";
     },
     async listItems(query) {
-      calls.push(["listItems", query]);
+      assert.equal(query.Limit, 20);
       return {
-        TotalRecordCount: 1,
         Items: [
           {
             Id: "i1",
             Name: "Pilot",
             Type: "Episode",
-            ProductionYear: 2020,
+            ProductionYear: 2008,
+            CommunityRating: 9.1,
             SeriesName: "Breaking Bad",
-            SeriesId: "series1",
-            SeasonName: "Season 1",
-            SeasonId: "season1",
             ParentIndexNumber: 1,
             IndexNumber: 1
           }
@@ -32,188 +27,79 @@ test("list media resolves user and maps items", async () => {
       };
     }
   };
-
-  const toolRunner = createToolRunner({
-    client,
-    sessionResolver: {},
-    defaultUserId: null
-  });
-
-  const result = await toolRunner.run("jellyfin_list_media", {
-    includeItemTypes: ["Movie"],
-    limit: 10
-  });
-
-  assert.equal(result.totalRecordCount, 1);
-  assert.equal(result.items[0].id, "i1");
+  const tools = createToolRunner({ client, sessionResolver: {}, defaultUserId: null });
+  const result = await tools.run("jellyfin_browse", { query: "breaking", limit: 999 });
+  assert.equal(result.count, 1);
+  assert.equal(result.items[0].title, "Pilot");
   assert.equal(result.items[0].seriesName, "Breaking Bad");
-  assert.equal(result.items[0].seasonNumber, 1);
-  assert.equal(result.items[0].episodeNumber, 1);
-  assert.equal(calls[0][0], "resolveUserId");
-  assert.equal(calls[1][0], "listItems");
+  assert.equal(Object.hasOwn(result.items[0], "id"), false);
 });
 
-test("play tool sends payload to resolved session", async () => {
+test("recommendations tool name and compact payload", async () => {
+  const client = {
+    async resolveUserId() {
+      return "u1";
+    },
+    async getSuggestions(query) {
+      assert.equal(query.Limit, 20);
+      return {
+        Items: [{ Id: "m1", Name: "WALL·E", Type: "Movie", ProductionYear: 2008, CommunityRating: 8.4 }]
+      };
+    }
+  };
+  const tools = createToolRunner({ client, sessionResolver: {}, defaultUserId: null });
+  const result = await tools.run("jellyfin_get_recommendations", { limit: 500 });
+  assert.equal(result.count, 1);
+  assert.equal(result.items[0].title, "WALL·E");
+  assert.equal(Object.hasOwn(result.items[0], "id"), false);
+});
+
+test("play by name searches and plays selected item", async () => {
   let sent = null;
   const client = {
-    async sendPlay(sessionId, body) {
-      sent = { sessionId, body };
+    async resolveUserId() {
+      return "u1";
+    },
+    async listItems(query) {
+      if (query.ParentId) {
+        return { Items: [] };
+      }
+      return { Items: [{ Id: "m1", Name: "WALL·E", Type: "Movie" }] };
+    },
+    async sendPlay(sessionId, payload) {
+      sent = { sessionId, payload };
     }
   };
   const sessionResolver = {
     async resolveSession() {
-      return { sessionId: "s1", resolution: "auto" };
+      return { sessionId: "s1", deviceName: "Living Room TV" };
     }
   };
-
-  const toolRunner = createToolRunner({
-    client,
-    sessionResolver,
-    defaultUserId: "u1"
-  });
-
-  const result = await toolRunner.run("jellyfin_play", {
-    itemIds: ["i1"],
-    playCommand: "PlayNow"
-  });
+  const tools = createToolRunner({ client, sessionResolver, defaultUserId: null });
+  const result = await tools.run("jellyfin_play_by_name", { query: "wall e" });
   assert.equal(result.ok, true);
+  assert.equal(result.selectedTitle, "WALL·E");
+  assert.equal(result.sessionName, "Living Room TV");
   assert.equal(sent.sessionId, "s1");
-  assert.deepEqual(sent.body.itemIds, ["i1"]);
-  assert.equal(sent.body.playCommand, "PlayNow");
+  assert.deepEqual(sent.payload.itemIds, ["m1"]);
 });
 
-test("play by name prefers series and starts first episode", async () => {
-  const calls = [];
-  let played = null;
+test("playback control maps pause to playstate command", async () => {
+  let sent = null;
   const client = {
-    async resolveUserId() {
-      return "u1";
-    },
-    async listItems(query) {
-      calls.push(query);
-      if (query.SearchTerm) {
-        return {
-          Items: [
-            { Id: "series1", Name: "Breaking Bad", Type: "Series" },
-            { Id: "movie1", Name: "Breaking", Type: "Movie" }
-          ]
-        };
-      }
-      return {
-        Items: [
-          {
-            Id: "ep1",
-            Name: "Pilot",
-            Type: "Episode",
-            SeriesName: "Breaking Bad",
-            ParentIndexNumber: 1,
-            IndexNumber: 1
-          }
-        ]
-      };
-    },
-    async sendPlay(sessionId, body) {
-      played = { sessionId, body };
+    async sendPlaystate(sessionId, command) {
+      sent = { sessionId, command };
     }
   };
   const sessionResolver = {
     async resolveSession() {
-      return { sessionId: "s1", resolution: "auto" };
+      return { sessionId: "s1", deviceName: "Desktop" };
     }
   };
-  const toolRunner = createToolRunner({
-    client,
-    sessionResolver,
-    defaultUserId: null
-  });
-
-  const result = await toolRunner.run("jellyfin_play_by_name", { query: "breaking bad" });
+  const tools = createToolRunner({ client, sessionResolver, defaultUserId: null });
+  const result = await tools.run("jellyfin_playback_control", { action: "pause" });
   assert.equal(result.ok, true);
-  assert.equal(result.selected.id, "ep1");
-  assert.equal(result.selected.seriesName, "Breaking Bad");
-  assert.equal(played.sessionId, "s1");
-  assert.deepEqual(played.body.itemIds, ["ep1"]);
-  assert.ok(calls.length >= 2);
-});
-
-test("play by name uses fallback matching for punctuation variants", async () => {
-  let played = null;
-  const client = {
-    async resolveUserId() {
-      return "u1";
-    },
-    async listItems(query) {
-      if (query.SearchTerm) {
-        return { Items: [] };
-      }
-      return {
-        Items: [{ Id: "m1", Name: "WALL·E", Type: "Movie" }]
-      };
-    },
-    async sendPlay(sessionId, body) {
-      played = { sessionId, body };
-    }
-  };
-  const sessionResolver = {
-    async resolveSession() {
-      return { sessionId: "s1", resolution: "auto" };
-    }
-  };
-  const toolRunner = createToolRunner({
-    client,
-    sessionResolver,
-    defaultUserId: null
-  });
-
-  const result = await toolRunner.run("jellyfin_play_by_name", { query: "wall e" });
-  assert.equal(result.ok, true);
-  assert.equal(result.selected.name, "WALL·E");
-  assert.deepEqual(played.body.itemIds, ["m1"]);
-});
-
-test("play by name returns no match when fallback has unrelated titles", async () => {
-  const client = {
-    async resolveUserId() {
-      return "u1";
-    },
-    async listItems(query) {
-      if (query.SearchTerm) {
-        return { Items: [] };
-      }
-      return {
-        Items: [{ Id: "x1", Name: "3 Body Problem", Type: "Series" }]
-      };
-    },
-    async sendPlay() {
-      throw new Error("sendPlay should not be called for unmatched query");
-    }
-  };
-  const toolRunner = createToolRunner({
-    client,
-    sessionResolver: {},
-    defaultUserId: null
-  });
-
-  const result = await toolRunner.run("jellyfin_play_by_name", { query: "wall e" });
-  assert.equal(result.ok, false);
-});
-
-test("get_me returns fallback source from current user resolver", async () => {
-  const client = {
-    async getCurrentUser() {
-      return {
-        source: "users_single",
-        user: { Id: "u1", Name: "admin", PrimaryImageTag: null }
-      };
-    }
-  };
-  const toolRunner = createToolRunner({
-    client,
-    sessionResolver: {},
-    defaultUserId: null
-  });
-
-  const result = await toolRunner.run("jellyfin_get_me", {});
-  assert.equal(result.user.id, "u1");
-  assert.equal(result.source, "users_single");
+  assert.equal(result.action, "pause");
+  assert.equal(sent.sessionId, "s1");
+  assert.equal(sent.command, "Pause");
 });

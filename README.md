@@ -6,19 +6,14 @@ MCP server (stdio) for controlling Jellyfin via HTTP API, compatible with Node.j
 
 Implemented tools:
 
-1. `jellyfin_get_me`
-2. `jellyfin_list_media`
-3. `jellyfin_get_suggestions`
-4. `jellyfin_get_movie_recommendations`
-5. `jellyfin_list_sessions`
-6. `jellyfin_play`
-7. `jellyfin_play_by_name`
-8. `jellyfin_playstate`
-9. `jellyfin_command`
+1. `jellyfin_browse`
+2. `jellyfin_get_recommendations`
+3. `jellyfin_play_by_name`
+4. `jellyfin_playback_control`
 
 Includes smart session auto-discovery for playback tools when `sessionId` is omitted.
 
-`jellyfin_list_media` now includes episode/series context fields (`seriesName`, `seriesId`, `seasonName`, `seasonNumber`, `episodeNumber`) so agents can identify episodes without extra calls.
+Tool outputs are intentionally compact and default-capped to `20` items per call.
 
 For "play breaking bad"-style requests, use `jellyfin_play_by_name` to search and start playback in one tool call.
 

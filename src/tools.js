@@ -1,5 +1,7 @@
 "use strict";
 
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 20;
 const DEFAULT_INCLUDE_TYPES = ["Series", "Movie", "Episode", "Audio"];
 const CONTEXT_FIELDS = [
   "SeriesName",
@@ -13,92 +15,41 @@ const CONTEXT_FIELDS = [
   "ProductionYear"
 ];
 
-const PLAYSTATE_COMMANDS = new Set([
-  "PlayPause",
-  "Pause",
-  "Unpause",
-  "Stop",
-  "NextTrack",
-  "PreviousTrack",
-  "Seek",
-  "Rewind",
-  "FastForward"
-]);
+const PLAYBACK_ACTIONS = {
+  pause: "Pause",
+  resume: "Unpause",
+  stop: "Stop",
+  toggle: "PlayPause",
+  next: "NextTrack",
+  previous: "PreviousTrack"
+};
 
 function toolDefinitions() {
   return [
     {
-      name: "jellyfin_get_me",
-      description: "Get current Jellyfin user bound to API key.",
-      inputSchema: { type: "object", properties: {}, additionalProperties: false }
-    },
-    {
-      name: "jellyfin_list_media",
-      description: "List media items from Jellyfin library for a user.",
+      name: "jellyfin_browse",
+      description: "Browse or search media with compact output.",
       inputSchema: {
         type: "object",
         properties: {
+          query: { type: "string" },
           userId: { type: "string" },
-          searchTerm: { type: "string" },
           includeItemTypes: { type: "array", items: { type: "string" } },
-          parentId: { type: "string" },
-          limit: { type: "integer", minimum: 1, maximum: 200 },
-          startIndex: { type: "integer", minimum: 0 },
-          sortBy: { type: "string" },
-          sortOrder: { type: "string", enum: ["Ascending", "Descending"] }
+          limit: { type: "integer", minimum: 1, maximum: MAX_LIMIT }
         },
         additionalProperties: false
       }
     },
     {
-      name: "jellyfin_get_suggestions",
-      description: "Get Jellyfin suggestions for a user.",
+      name: "jellyfin_get_recommendations",
+      description: "Get compact media recommendations.",
       inputSchema: {
         type: "object",
         properties: {
           userId: { type: "string" },
           mediaType: { type: "string" },
-          limit: { type: "integer", minimum: 1, maximum: 100 }
+          limit: { type: "integer", minimum: 1, maximum: MAX_LIMIT }
         },
-        additionalProperties: false
-      }
-    },
-    {
-      name: "jellyfin_get_movie_recommendations",
-      description: "Get movie recommendation buckets for a user.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          userId: { type: "string" },
-          categoryLimit: { type: "integer", minimum: 1, maximum: 20 },
-          itemLimit: { type: "integer", minimum: 1, maximum: 100 }
-        },
-        additionalProperties: false
-      }
-    },
-    {
-      name: "jellyfin_list_sessions",
-      description: "List active Jellyfin sessions.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          controllableOnly: { type: "boolean" }
-        },
-        additionalProperties: false
-      }
-    },
-    {
-      name: "jellyfin_play",
-      description: "Start playback of one or more Jellyfin items on a session.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: { type: "string" },
-          itemIds: { type: "array", items: { type: "string" }, minItems: 1 },
-          startPositionTicks: { type: "integer", minimum: 0 },
-          playCommand: { type: "string", enum: ["PlayNow", "PlayNext", "PlayLast"] }
-        },
-        required: ["itemIds"],
         additionalProperties: false
       }
     },
@@ -108,42 +59,25 @@ function toolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          sessionId: { type: "string" },
-          userId: { type: "string" },
           query: { type: "string", minLength: 1 },
-          includeItemTypes: { type: "array", items: { type: "string" } },
-          playCommand: { type: "string", enum: ["PlayNow", "PlayNext", "PlayLast"] },
-          limit: { type: "integer", minimum: 1, maximum: 50 }
+          userId: { type: "string" },
+          sessionId: { type: "string" },
+          includeItemTypes: { type: "array", items: { type: "string" } }
         },
         required: ["query"],
         additionalProperties: false
       }
     },
     {
-      name: "jellyfin_playstate",
-      description: "Send a playback state command to a Jellyfin session.",
+      name: "jellyfin_playback_control",
+      description: "Control playback without exposing session details.",
       inputSchema: {
         type: "object",
         properties: {
-          sessionId: { type: "string" },
-          command: { type: "string" },
-          seekPositionTicks: { type: "integer", minimum: 0 }
+          action: { type: "string", enum: Object.keys(PLAYBACK_ACTIONS) },
+          sessionId: { type: "string" }
         },
-        required: ["command"],
-        additionalProperties: false
-      }
-    },
-    {
-      name: "jellyfin_command",
-      description: "Send a general command to a Jellyfin session.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: { type: "string" },
-          command: { type: "string" },
-          arguments: { type: "object" }
-        },
-        required: ["command"],
+        required: ["action"],
         additionalProperties: false
       }
     }
@@ -152,103 +86,40 @@ function toolDefinitions() {
 
 function createToolRunner({ client, sessionResolver, defaultUserId }) {
   const handlers = {
-    jellyfin_get_me: async () => {
-      const resolved = await client.getCurrentUser();
-      return {
-        user: pickUser(resolved.user),
-        source: resolved.source
-      };
-    },
-
-    jellyfin_list_media: async (args) => {
+    jellyfin_browse: async (args) => {
       const userId = await client.resolveUserId(args.userId || defaultUserId);
-      const limit = clampInt(args.limit, 25, 1, 200);
-      const startIndex = clampInt(args.startIndex, 0, 0, 1000000);
-
+      const limit = clampInt(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
       const response = await client.listItems({
         UserId: userId,
         Recursive: true,
+        SearchTerm: args.query,
         IncludeItemTypes: normalizeItemTypes(args.includeItemTypes),
-        SearchTerm: args.searchTerm,
-        ParentId: args.parentId,
         Limit: limit,
-        StartIndex: startIndex,
-        SortBy: args.sortBy,
-        SortOrder: args.sortOrder,
+        SortBy: "SortName",
+        SortOrder: "Ascending",
         Fields: CONTEXT_FIELDS
       });
-
+      const items = (response.Items || []).map(toPublicItem).slice(0, MAX_LIMIT);
       return {
-        totalRecordCount: response.TotalRecordCount || 0,
-        items: (response.Items || []).map(pickItem)
+        query: args.query || null,
+        count: items.length,
+        items
       };
     },
 
-    jellyfin_get_suggestions: async (args) => {
+    jellyfin_get_recommendations: async (args) => {
       const userId = await client.resolveUserId(args.userId || defaultUserId);
-      const limit = clampInt(args.limit, 20, 1, 100);
+      const limit = clampInt(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
       const response = await client.getSuggestions({
         UserId: userId,
         MediaType: args.mediaType,
         Limit: limit
       });
+      const items = (response.Items || []).map(toPublicItem).slice(0, MAX_LIMIT);
       return {
-        items: (response.Items || []).map(pickItem)
-      };
-    },
-
-    jellyfin_get_movie_recommendations: async (args) => {
-      const userId = await client.resolveUserId(args.userId || defaultUserId);
-      const categoryLimit = clampInt(args.categoryLimit, 6, 1, 20);
-      const itemLimit = clampInt(args.itemLimit, 10, 1, 100);
-      const response = await client.getMovieRecommendations({
-        UserId: userId,
-        CategoryLimit: categoryLimit,
-        ItemLimit: itemLimit
-      });
-      return {
-        categories: (response || []).map((bucket) => ({
-          categoryId: bucket.CategoryId || null,
-          baselineItemName: bucket.BaselineItemName || null,
-          items: (bucket.Items || []).map(pickItem)
-        }))
-      };
-    },
-
-    jellyfin_list_sessions: async (args) => {
-      const sessions = await client.listSessions();
-      const filtered = (sessions || []).filter((s) => {
-        if (!args.controllableOnly) {
-          return true;
-        }
-        return s.SupportsRemoteControl !== false;
-      });
-      return {
-        sessions: filtered.map((s) => ({
-          id: s.Id,
-          userName: s.UserName || null,
-          deviceName: s.DeviceName || null,
-          deviceId: s.DeviceId || null,
-          client: s.Client || null,
-          nowPlaying: s.NowPlayingItem ? s.NowPlayingItem.Name : null,
-          isPaused: Boolean(s.PlayState && s.PlayState.IsPaused),
-          lastActivityDate: s.LastActivityDate || null
-        }))
-      };
-    },
-
-    jellyfin_play: async (args) => {
-      ensureArrayOfStrings(args.itemIds, "itemIds");
-      const resolved = await sessionResolver.resolveSession({ sessionId: args.sessionId });
-      await client.sendPlay(resolved.sessionId, {
-        itemIds: args.itemIds,
-        startPositionTicks: args.startPositionTicks || 0,
-        playCommand: args.playCommand || "PlayNow"
-      });
-      return {
-        ok: true,
-        sessionId: resolved.sessionId,
-        resolution: resolved.resolution
+        mediaType: args.mediaType || null,
+        count: items.length,
+        items
       };
     },
 
@@ -257,51 +128,27 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
       if (!query) {
         throw new Error("query is required.");
       }
-
       const userId = await client.resolveUserId(args.userId || defaultUserId);
-      const limit = clampInt(args.limit, 10, 1, 50);
-      const includeTypes = normalizeItemTypes(args.includeItemTypes);
       const searchTerms = buildSearchTerms(query);
       const merged = new Map();
       for (const term of searchTerms) {
-        const search = await client.listItems({
+        const response = await client.listItems({
           UserId: userId,
           Recursive: true,
           SearchTerm: term,
-          IncludeItemTypes: includeTypes,
-          Limit: limit,
+          IncludeItemTypes: normalizeItemTypes(args.includeItemTypes),
+          Limit: MAX_LIMIT,
           SortBy: "SortName",
           SortOrder: "Ascending",
           Fields: CONTEXT_FIELDS
         });
-        for (const rawItem of search.Items || []) {
-          merged.set(rawItem.Id, pickItem(rawItem));
+        for (const item of response.Items || []) {
+          merged.set(item.Id, item);
         }
-      }
-      const candidates = Array.from(merged.values());
-      if (candidates.length === 0) {
-        const fallback = await client.listItems({
-          UserId: userId,
-          Recursive: true,
-          IncludeItemTypes: includeTypes,
-          Limit: 200,
-          SortBy: "SortName",
-          SortOrder: "Ascending",
-          Fields: CONTEXT_FIELDS
-        });
-        const fallbackCandidates = (fallback.Items || []).map(pickItem);
-        const fallbackChoice = chooseBestMatch(fallbackCandidates, query);
-        if (!fallbackChoice || scoreMatch(fallbackChoice, normalizeForMatch(query)) <= 0) {
-          return {
-            ok: false,
-            query,
-            reason: "No matching media items found."
-          };
-        }
-        candidates.push(fallbackChoice);
       }
 
-      let selected = chooseBestMatch(candidates, query);
+      const candidates = Array.from(merged.values());
+      const selected = chooseBestMatch(candidates, query);
       if (!selected) {
         return {
           ok: false,
@@ -309,11 +156,13 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
           reason: "No matching media items found."
         };
       }
-      if (selected.type === "Series") {
+
+      let selectedPlayable = selected;
+      if (selected.Type === "Series") {
         const episodes = await client.listItems({
           UserId: userId,
           Recursive: true,
-          ParentId: selected.id,
+          ParentId: selected.Id,
           IncludeItemTypes: ["Episode"],
           Limit: 1,
           SortBy: "SortName",
@@ -321,53 +170,37 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
           Fields: CONTEXT_FIELDS
         });
         if (episodes.Items && episodes.Items[0]) {
-          selected = pickItem(episodes.Items[0]);
+          selectedPlayable = episodes.Items[0];
         }
       }
 
-      const resolved = await sessionResolver.resolveSession({ sessionId: args.sessionId });
-      await client.sendPlay(resolved.sessionId, {
-        itemIds: [selected.id],
-        playCommand: args.playCommand || "PlayNow"
+      const resolvedSession = await sessionResolver.resolveSession({ sessionId: args.sessionId });
+      await client.sendPlay(resolvedSession.sessionId, {
+        itemIds: [selectedPlayable.Id],
+        playCommand: "PlayNow"
       });
 
+      const item = toPublicItem(selectedPlayable);
       return {
         ok: true,
-        query,
-        selected,
-        sessionId: resolved.sessionId,
-        resolution: resolved.resolution,
-        candidates: candidates.slice(0, 5)
+        selectedTitle: item.title,
+        selectedType: item.type,
+        seriesName: item.seriesName,
+        sessionName: resolvedSession.deviceName || null
       };
     },
 
-    jellyfin_playstate: async (args) => {
-      if (!PLAYSTATE_COMMANDS.has(args.command)) {
-        throw new Error(`Invalid playstate command: ${args.command}`);
+    jellyfin_playback_control: async (args) => {
+      const command = PLAYBACK_ACTIONS[args.action];
+      if (!command) {
+        throw new Error(`Unsupported action: ${args.action}`);
       }
-      const resolved = await sessionResolver.resolveSession({ sessionId: args.sessionId });
-      await client.sendPlaystate(resolved.sessionId, args.command, {
-        SeekPositionTicks: args.seekPositionTicks
-      });
+      const resolvedSession = await sessionResolver.resolveSession({ sessionId: args.sessionId });
+      await client.sendPlaystate(resolvedSession.sessionId, command, {});
       return {
         ok: true,
-        sessionId: resolved.sessionId,
-        command: args.command,
-        resolution: resolved.resolution
-      };
-    },
-
-    jellyfin_command: async (args) => {
-      if (!args.command || typeof args.command !== "string") {
-        throw new Error("command is required.");
-      }
-      const resolved = await sessionResolver.resolveSession({ sessionId: args.sessionId });
-      await client.sendCommand(resolved.sessionId, args.command, args.arguments || {});
-      return {
-        ok: true,
-        sessionId: resolved.sessionId,
-        command: args.command,
-        resolution: resolved.resolution
+        action: args.action,
+        sessionName: resolvedSession.deviceName || null
       };
     }
   };
@@ -387,48 +220,16 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
   };
 }
 
-function pickItem(item) {
+function toPublicItem(item) {
   return {
-    id: item.Id,
-    name: item.Name,
-    type: item.Type,
-    productionYear: item.ProductionYear || null,
-    communityRating: item.CommunityRating || null,
+    title: item.Name || null,
+    type: item.Type || null,
+    year: item.ProductionYear || null,
+    rating: item.CommunityRating || null,
     seriesName: item.SeriesName || null,
-    seriesId: item.SeriesId || null,
-    seasonName: item.SeasonName || null,
-    seasonId: item.SeasonId || null,
     seasonNumber: item.ParentIndexNumber ?? null,
-    episodeNumber: item.IndexNumber ?? null,
-    runTimeTicks: item.RunTimeTicks ?? null
+    episodeNumber: item.IndexNumber ?? null
   };
-}
-
-function pickUser(user) {
-  return {
-    id: user.Id,
-    name: user.Name,
-    primaryImageTag: user.PrimaryImageTag || null
-  };
-}
-
-function clampInt(value, fallback, min, max) {
-  const n = Number.parseInt(value, 10);
-  if (!Number.isFinite(n)) {
-    return fallback;
-  }
-  return Math.min(max, Math.max(min, n));
-}
-
-function ensureArrayOfStrings(value, fieldName) {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${fieldName} must be a non-empty array.`);
-  }
-  for (const entry of value) {
-    if (typeof entry !== "string" || entry.length === 0) {
-      throw new Error(`${fieldName} must only contain non-empty strings.`);
-    }
-  }
 }
 
 function normalizeItemTypes(value) {
@@ -437,52 +238,6 @@ function normalizeItemTypes(value) {
   }
   const clean = value.filter((entry) => typeof entry === "string" && entry.length > 0);
   return clean.length > 0 ? clean : DEFAULT_INCLUDE_TYPES;
-}
-
-function chooseBestMatch(items, query) {
-  const normalizedQuery = normalizeForMatch(query);
-  const scored = items.map((item) => ({ item, score: scoreMatch(item, normalizedQuery) }));
-  scored.sort((a, b) => b.score - a.score);
-  if (scored.length === 0 || scored[0].score <= 0) {
-    return null;
-  }
-  return scored[0].item;
-}
-
-function scoreMatch(item, normalizedQuery) {
-  const normalizedName = normalizeForMatch(item.name || "");
-  let textScore = 0;
-
-  if (normalizedName === normalizedQuery) {
-    textScore = 100;
-  } else if (normalizedName.startsWith(normalizedQuery)) {
-    textScore = 70;
-  } else if (normalizedName.includes(normalizedQuery)) {
-    textScore = 45;
-  }
-
-  if (textScore === 0) {
-    return 0;
-  }
-
-  let score = textScore;
-  if (item.type === "Series") {
-    score += 20;
-  } else if (item.type === "Movie") {
-    score += 15;
-  } else if (item.type === "Episode") {
-    score += 10;
-  }
-
-  return score;
-}
-
-function normalizeForMatch(value) {
-  return String(value)
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
 }
 
 function buildSearchTerms(query) {
@@ -501,6 +256,56 @@ function buildSearchTerms(query) {
     terms.add(firstToken);
   }
   return Array.from(terms).filter((term) => term && term.trim().length > 0);
+}
+
+function chooseBestMatch(items, query) {
+  const normalizedQuery = normalizeForMatch(query);
+  const scored = items.map((item) => ({ item, score: scoreMatch(item, normalizedQuery) }));
+  scored.sort((a, b) => b.score - a.score);
+  if (scored.length === 0 || scored[0].score <= 0) {
+    return null;
+  }
+  return scored[0].item;
+}
+
+function scoreMatch(item, normalizedQuery) {
+  const normalizedName = normalizeForMatch(item.Name || "");
+  let textScore = 0;
+  if (normalizedName === normalizedQuery) {
+    textScore = 100;
+  } else if (normalizedName.startsWith(normalizedQuery)) {
+    textScore = 70;
+  } else if (normalizedName.includes(normalizedQuery)) {
+    textScore = 45;
+  }
+  if (textScore === 0) {
+    return 0;
+  }
+  let score = textScore;
+  if (item.Type === "Series") {
+    score += 20;
+  } else if (item.Type === "Movie") {
+    score += 15;
+  } else if (item.Type === "Episode") {
+    score += 10;
+  }
+  return score;
+}
+
+function normalizeForMatch(value) {
+  return String(value)
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function clampInt(value, fallback, min, max) {
+  const n = Number.parseInt(value, 10);
+  if (!Number.isFinite(n)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, n));
 }
 
 module.exports = {
