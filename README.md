@@ -8,10 +8,12 @@ Implemented tools:
 
 1. `jellyfin_browse`
 2. `jellyfin_get_recommendations`
-3. `jellyfin_play_by_name`
-4. `jellyfin_playback_control`
+3. `jellyfin_get_next_up`
+4. `jellyfin_play_by_name`
+5. `jellyfin_playback_control`
 
 Includes smart session auto-discovery for playback tools when `sessionId` is omitted.
+`jellyfin_playback_control` requires an active player session and returns an error if nothing is currently playing.
 
 Tool outputs are intentionally compact and default-capped to `20` items per call.
 

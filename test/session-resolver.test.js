@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { SessionResolver } = require("../src/session-resolver");
+const { ERRORS } = require("../src/constants");
 
 test("session resolver picks currently active remote session", async () => {
   const now = Date.parse("2026-02-17T18:00:00Z");
@@ -100,4 +101,29 @@ test("session resolver returns ambiguity in ask strategy", async () => {
     assert.ok(err.choices.length >= 2);
     return true;
   });
+});
+
+test("session resolver errors when playback control requires active player", async () => {
+  const client = {
+    async listSessions() {
+      return [
+        {
+          Id: "s1",
+          DeviceName: "Living Room TV",
+          SupportsRemoteControl: true,
+          LastActivityDate: "2026-02-17T17:59:00Z"
+        }
+      ];
+    }
+  };
+
+  const resolver = new SessionResolver({
+    client,
+    strategy: "active"
+  });
+
+  await assert.rejects(
+    () => resolver.resolveSession({ requireNowPlaying: true }),
+    new RegExp(ERRORS.noActivePlayer)
+  );
 });

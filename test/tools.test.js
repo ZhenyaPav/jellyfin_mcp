@@ -54,6 +54,37 @@ test("recommendations tool name and compact payload", async () => {
   assert.equal(Object.hasOwn(result.items[0], "id"), false);
 });
 
+test("next up tool returns compact episodes", async () => {
+  const client = {
+    async resolveUserId() {
+      return "u1";
+    },
+    async getNextUp(query) {
+      assert.equal(query.UserId, "u1");
+      assert.equal(query.SeriesId, "series1");
+      assert.equal(query.Limit, 20);
+      return {
+        Items: [
+          {
+            Id: "e1",
+            Name: "Episode 1",
+            Type: "Episode",
+            SeriesName: "Show",
+            ParentIndexNumber: 1,
+            IndexNumber: 1
+          }
+        ]
+      };
+    }
+  };
+
+  const tools = createToolRunner({ client, sessionResolver: {}, defaultUserId: null });
+  const result = await tools.run("jellyfin_get_next_up", { seriesId: "series1", limit: 999 });
+  assert.equal(result.count, 1);
+  assert.equal(result.items[0].type, "Episode");
+  assert.equal(result.items[0].seriesName, "Show");
+});
+
 test("play by name searches and plays selected item", async () => {
   let sent = null;
   const client = {
@@ -84,15 +115,51 @@ test("play by name searches and plays selected item", async () => {
   assert.deepEqual(sent.payload.itemIds, ["m1"]);
 });
 
+test("play by name resolves series query to first episode when available", async () => {
+  let sent = null;
+  const client = {
+    async resolveUserId() {
+      return "u1";
+    },
+    async listItems(query) {
+      if (query.ParentId === "series1") {
+        return {
+          Items: [{ Id: "e1", Name: "Pilot", Type: "Episode", SeriesName: "The Show", IndexNumber: 1 }]
+        };
+      }
+      return {
+        Items: [{ Id: "series1", Name: "The Show", Type: "Series" }]
+      };
+    },
+    async sendPlay(sessionId, payload) {
+      sent = { sessionId, payload };
+    }
+  };
+  const sessionResolver = {
+    async resolveSession() {
+      return { sessionId: "s1", deviceName: "Living Room TV" };
+    }
+  };
+  const tools = createToolRunner({ client, sessionResolver, defaultUserId: null });
+  const result = await tools.run("jellyfin_play_by_name", { query: "the show" });
+  assert.equal(result.ok, true);
+  assert.equal(result.selectedType, "Episode");
+  assert.equal(result.selectedTitle, "Pilot");
+  assert.equal(result.seriesName, "The Show");
+  assert.deepEqual(sent.payload.itemIds, ["e1"]);
+});
+
 test("playback control maps pause to playstate command", async () => {
   let sent = null;
+  let resolverInput = null;
   const client = {
     async sendPlaystate(sessionId, command) {
       sent = { sessionId, command };
     }
   };
   const sessionResolver = {
-    async resolveSession() {
+    async resolveSession(input) {
+      resolverInput = input;
       return { sessionId: "s1", deviceName: "Desktop" };
     }
   };
@@ -102,4 +169,5 @@ test("playback control maps pause to playstate command", async () => {
   assert.equal(result.action, "pause");
   assert.equal(sent.sessionId, "s1");
   assert.equal(sent.command, "Pause");
+  assert.equal(resolverInput.requireNowPlaying, true);
 });

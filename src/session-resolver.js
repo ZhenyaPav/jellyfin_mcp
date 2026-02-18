@@ -1,5 +1,7 @@
 "use strict";
 
+const { ERRORS, SESSION_STRATEGIES } = require("./constants");
+
 function toTimestamp(value) {
   if (!value) {
     return 0;
@@ -11,7 +13,7 @@ function toTimestamp(value) {
 class SessionResolver {
   constructor(options) {
     this.client = options.client;
-    this.strategy = options.strategy || "active";
+    this.strategy = options.strategy || SESSION_STRATEGIES.active;
     this.deviceIdHint = options.deviceIdHint || null;
     this.nowFn = options.nowFn || (() => Date.now());
   }
@@ -27,21 +29,33 @@ class SessionResolver {
 
     const sessions = await this.client.listSessions();
     if (!Array.isArray(sessions) || sessions.length === 0) {
-      throw new Error("No active Jellyfin sessions found.");
+      throw new Error(ERRORS.noSessions);
     }
 
-    const ranked = sessions
+    const remoteSessions = sessions.filter((session) => session.SupportsRemoteControl !== false);
+    if (remoteSessions.length === 0) {
+      throw new Error(ERRORS.noRemoteSessions);
+    }
+
+    const targetSessions = input.requireNowPlaying
+      ? remoteSessions.filter((session) => Boolean(session.NowPlayingItem))
+      : remoteSessions;
+    if (targetSessions.length === 0 && input.requireNowPlaying) {
+      throw new Error(ERRORS.noActivePlayer);
+    }
+
+    const ranked = targetSessions
       .map((s) => ({ session: s, score: this.scoreSession(s, input.deviceIdHint || this.deviceIdHint) }))
       .sort((a, b) => b.score - a.score);
 
     const top = ranked[0];
     if (!top || !top.session || !top.session.Id) {
-      throw new Error("Failed to select a Jellyfin session.");
+      throw new Error(ERRORS.failedSessionSelect);
     }
 
     const second = ranked[1];
     const ambiguous = second && top.score - second.score < 15;
-    if (this.strategy === "ask" && ambiguous) {
+    if (this.strategy === SESSION_STRATEGIES.ask && ambiguous) {
       const choices = ranked.slice(0, 5).map(({ session, score }) => ({
         sessionId: session.Id,
         deviceName: session.DeviceName || null,
@@ -49,7 +63,7 @@ class SessionResolver {
         nowPlaying: session.NowPlayingItem ? session.NowPlayingItem.Name : null,
         score
       }));
-      const err = new Error("Multiple likely sessions; explicit sessionId required.");
+      const err = new Error(ERRORS.ambiguousSessions);
       err.code = "SESSION_AMBIGUOUS";
       err.choices = choices;
       throw err;
@@ -96,9 +110,9 @@ class SessionResolver {
       }
     }
 
-    if (this.strategy === "recent") {
+    if (this.strategy === SESSION_STRATEGIES.recent) {
       score += 5;
-    } else if (this.strategy === "device" && hint) {
+    } else if (this.strategy === SESSION_STRATEGIES.device && hint) {
       score += 8;
     }
 

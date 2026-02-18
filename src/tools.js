@@ -1,33 +1,20 @@
 "use strict";
 
-const DEFAULT_LIMIT = 20;
-const MAX_LIMIT = 20;
-const DEFAULT_INCLUDE_TYPES = ["Series", "Movie", "Episode", "Audio"];
-const CONTEXT_FIELDS = [
-  "SeriesName",
-  "SeriesId",
-  "SeasonName",
-  "SeasonId",
-  "ParentIndexNumber",
-  "IndexNumber",
-  "RunTimeTicks",
-  "CommunityRating",
-  "ProductionYear"
-];
-
-const PLAYBACK_ACTIONS = {
-  pause: "Pause",
-  resume: "Unpause",
-  stop: "Stop",
-  toggle: "PlayPause",
-  next: "NextTrack",
-  previous: "PreviousTrack"
-};
+const {
+  CONTEXT_FIELDS,
+  DEFAULT_INCLUDE_TYPES,
+  ERRORS,
+  ITEM_TYPES,
+  LIMITS,
+  PLAYBACK_ACTIONS,
+  PLAY_COMMANDS,
+  TOOL_NAMES
+} = require("./constants");
 
 function toolDefinitions() {
   return [
     {
-      name: "jellyfin_browse",
+      name: TOOL_NAMES.browse,
       description: "Browse or search media with compact output.",
       inputSchema: {
         type: "object",
@@ -35,26 +22,39 @@ function toolDefinitions() {
           query: { type: "string" },
           userId: { type: "string" },
           includeItemTypes: { type: "array", items: { type: "string" } },
-          limit: { type: "integer", minimum: 1, maximum: MAX_LIMIT }
+          limit: { type: "integer", minimum: 1, maximum: LIMITS.max }
         },
         additionalProperties: false
       }
     },
     {
-      name: "jellyfin_get_recommendations",
+      name: TOOL_NAMES.recommendations,
       description: "Get compact media recommendations.",
       inputSchema: {
         type: "object",
         properties: {
           userId: { type: "string" },
           mediaType: { type: "string" },
-          limit: { type: "integer", minimum: 1, maximum: MAX_LIMIT }
+          limit: { type: "integer", minimum: 1, maximum: LIMITS.max }
         },
         additionalProperties: false
       }
     },
     {
-      name: "jellyfin_play_by_name",
+      name: TOOL_NAMES.nextUp,
+      description: "Get compact Next Up episodes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          userId: { type: "string" },
+          seriesId: { type: "string" },
+          limit: { type: "integer", minimum: 1, maximum: LIMITS.max }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: TOOL_NAMES.playByName,
       description: "Search and start playback in one call.",
       inputSchema: {
         type: "object",
@@ -69,7 +69,7 @@ function toolDefinitions() {
       }
     },
     {
-      name: "jellyfin_playback_control",
+      name: TOOL_NAMES.playbackControl,
       description: "Control playback without exposing session details.",
       inputSchema: {
         type: "object",
@@ -86,9 +86,9 @@ function toolDefinitions() {
 
 function createToolRunner({ client, sessionResolver, defaultUserId }) {
   const handlers = {
-    jellyfin_browse: async (args) => {
+    [TOOL_NAMES.browse]: async (args) => {
       const userId = await client.resolveUserId(args.userId || defaultUserId);
-      const limit = clampInt(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
+      const limit = clampInt(args.limit, LIMITS.default, 1, LIMITS.max);
       const response = await client.listItems({
         UserId: userId,
         Recursive: true,
@@ -99,7 +99,7 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
         SortOrder: "Ascending",
         Fields: CONTEXT_FIELDS
       });
-      const items = (response.Items || []).map(toPublicItem).slice(0, MAX_LIMIT);
+      const items = (response.Items || []).map(toPublicItem).slice(0, LIMITS.max);
       return {
         query: args.query || null,
         count: items.length,
@@ -107,15 +107,15 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
       };
     },
 
-    jellyfin_get_recommendations: async (args) => {
+    [TOOL_NAMES.recommendations]: async (args) => {
       const userId = await client.resolveUserId(args.userId || defaultUserId);
-      const limit = clampInt(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
+      const limit = clampInt(args.limit, LIMITS.default, 1, LIMITS.max);
       const response = await client.getSuggestions({
         UserId: userId,
         MediaType: args.mediaType,
         Limit: limit
       });
-      const items = (response.Items || []).map(toPublicItem).slice(0, MAX_LIMIT);
+      const items = (response.Items || []).map(toPublicItem).slice(0, LIMITS.max);
       return {
         mediaType: args.mediaType || null,
         count: items.length,
@@ -123,10 +123,27 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
       };
     },
 
-    jellyfin_play_by_name: async (args) => {
+    [TOOL_NAMES.nextUp]: async (args) => {
+      const userId = await client.resolveUserId(args.userId || defaultUserId);
+      const limit = clampInt(args.limit, LIMITS.default, 1, LIMITS.max);
+      const response = await client.getNextUp({
+        UserId: userId,
+        SeriesId: args.seriesId,
+        Limit: limit,
+        Fields: CONTEXT_FIELDS
+      });
+      const items = (response.Items || []).map(toPublicItem).slice(0, LIMITS.max);
+      return {
+        seriesId: args.seriesId || null,
+        count: items.length,
+        items
+      };
+    },
+
+    [TOOL_NAMES.playByName]: async (args) => {
       const query = String(args.query || "").trim();
       if (!query) {
-        throw new Error("query is required.");
+        throw new Error(ERRORS.missingQuery);
       }
       const userId = await client.resolveUserId(args.userId || defaultUserId);
       const searchTerms = buildSearchTerms(query);
@@ -137,7 +154,7 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
           Recursive: true,
           SearchTerm: term,
           IncludeItemTypes: normalizeItemTypes(args.includeItemTypes),
-          Limit: MAX_LIMIT,
+          Limit: LIMITS.max,
           SortBy: "SortName",
           SortOrder: "Ascending",
           Fields: CONTEXT_FIELDS
@@ -153,17 +170,17 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
         return {
           ok: false,
           query,
-          reason: "No matching media items found."
+          reason: ERRORS.noMatch
         };
       }
 
       let selectedPlayable = selected;
-      if (selected.Type === "Series") {
+      if (selected.Type === ITEM_TYPES.series) {
         const episodes = await client.listItems({
           UserId: userId,
           Recursive: true,
           ParentId: selected.Id,
-          IncludeItemTypes: ["Episode"],
+          IncludeItemTypes: [ITEM_TYPES.episode],
           Limit: 1,
           SortBy: "SortName",
           SortOrder: "Ascending",
@@ -177,7 +194,7 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
       const resolvedSession = await sessionResolver.resolveSession({ sessionId: args.sessionId });
       await client.sendPlay(resolvedSession.sessionId, {
         itemIds: [selectedPlayable.Id],
-        playCommand: "PlayNow"
+        playCommand: PLAY_COMMANDS.playNow
       });
 
       const item = toPublicItem(selectedPlayable);
@@ -190,12 +207,15 @@ function createToolRunner({ client, sessionResolver, defaultUserId }) {
       };
     },
 
-    jellyfin_playback_control: async (args) => {
+    [TOOL_NAMES.playbackControl]: async (args) => {
       const command = PLAYBACK_ACTIONS[args.action];
       if (!command) {
         throw new Error(`Unsupported action: ${args.action}`);
       }
-      const resolvedSession = await sessionResolver.resolveSession({ sessionId: args.sessionId });
+      const resolvedSession = await sessionResolver.resolveSession({
+        sessionId: args.sessionId,
+        requireNowPlaying: true
+      });
       await client.sendPlaystate(resolvedSession.sessionId, command, {});
       return {
         ok: true,
@@ -282,11 +302,11 @@ function scoreMatch(item, normalizedQuery) {
     return 0;
   }
   let score = textScore;
-  if (item.Type === "Series") {
+  if (item.Type === ITEM_TYPES.series) {
     score += 20;
-  } else if (item.Type === "Movie") {
+  } else if (item.Type === ITEM_TYPES.movie) {
     score += 15;
-  } else if (item.Type === "Episode") {
+  } else if (item.Type === ITEM_TYPES.episode) {
     score += 10;
   }
   return score;

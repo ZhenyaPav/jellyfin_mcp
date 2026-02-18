@@ -36,3 +36,21 @@ test("resolveUserId falls back to /Users when /Users/Me returns 400", async () =
   assert.equal(userId, "u1");
   assert.equal(calls.length, 2);
 });
+
+test("getNextUp calls /Shows/NextUp with query", async () => {
+  const calls = [];
+  const client = new JellyfinClient({
+    baseUrl: "http://example",
+    apiKey: "k",
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return response(200, { Items: [] });
+    }
+  });
+
+  await client.getNextUp({ UserId: "u1", Limit: 5 });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /\/Shows\/NextUp\?/);
+  assert.match(calls[0], /UserId=u1/);
+  assert.match(calls[0], /Limit=5/);
+});

@@ -1,5 +1,7 @@
 "use strict";
 
+const { SESSION_STRATEGIES } = require("./constants");
+
 function getEnv(name, fallback) {
   const value = process.env[name];
   if (value === undefined || value === "") {
@@ -28,9 +30,9 @@ function loadConfig() {
     throw new Error("Missing required env var JELLYFIN_API_KEY");
   }
 
-  const strategy = getEnv("JELLYFIN_SESSION_STRATEGY", "active");
-  const allowedStrategies = new Set(["active", "recent", "device", "ask"]);
-  const sessionStrategy = allowedStrategies.has(strategy) ? strategy : "active";
+  const strategy = getEnv("JELLYFIN_SESSION_STRATEGY", SESSION_STRATEGIES.active);
+  const allowedStrategies = new Set(Object.values(SESSION_STRATEGIES));
+  const sessionStrategy = allowedStrategies.has(strategy) ? strategy : SESSION_STRATEGIES.active;
 
   return {
     baseUrl,

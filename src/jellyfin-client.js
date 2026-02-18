@@ -1,5 +1,15 @@
 "use strict";
 
+const API_PATHS = Object.freeze({
+  usersMe: "/Users/Me",
+  users: "/Users",
+  items: "/Items",
+  suggestions: "/Items/Suggestions",
+  nextUp: "/Shows/NextUp",
+  movieRecommendations: "/Movies/Recommendations",
+  sessions: "/Sessions"
+});
+
 function encodeQuery(query) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query || {})) {
@@ -65,11 +75,11 @@ class JellyfinClient {
   }
 
   async getMe() {
-    return this.request("GET", "/Users/Me");
+    return this.request("GET", API_PATHS.usersMe);
   }
 
   async listUsers() {
-    return this.request("GET", "/Users");
+    return this.request("GET", API_PATHS.users);
   }
 
   async getCurrentUser() {
@@ -111,19 +121,23 @@ class JellyfinClient {
   }
 
   async listItems(args) {
-    return this.request("GET", "/Items", { query: args });
+    return this.request("GET", API_PATHS.items, { query: args });
   }
 
   async getSuggestions(args) {
-    return this.request("GET", "/Items/Suggestions", { query: args });
+    return this.request("GET", API_PATHS.suggestions, { query: args });
+  }
+
+  async getNextUp(args) {
+    return this.request("GET", API_PATHS.nextUp, { query: args });
   }
 
   async getMovieRecommendations(args) {
-    return this.request("GET", "/Movies/Recommendations", { query: args });
+    return this.request("GET", API_PATHS.movieRecommendations, { query: args });
   }
 
   async listSessions(query) {
-    return this.request("GET", "/Sessions", { query });
+    return this.request("GET", API_PATHS.sessions, { query });
   }
 
   async sendPlay(sessionId, query) {
